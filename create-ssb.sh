@@ -1,6 +1,8 @@
 #!/bin/bash
-
+#
 # Site-Specific Browser (SSB) Creator - Creates Firefox profiles for web applications similar to ice-ssb utility
+# See https://en.wikipedia.org/wiki/Site-specific_browser
+#
 
 set -euo pipefail
 
@@ -8,9 +10,8 @@ ICON_SIZE=128
 MOZILLA_USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 
 function usage {
-    echo "Usage: $0 [-n | DEBUG MODE] [-r | REMOVE PROFILE] [-l | LIST PROFILEs] <URL> [FAVICON_PATH]"
+    echo "Usage: $0 [-r | REMOVE PROFILE] [-l | LIST PROFILEs] <URL> [FAVICON_PATH]"
     echo "Example: $0 https://en.wikipedia.org"
-    echo "Example: $0 -n https://en.wikipedia.org"
     echo "Example: $0 https://en.wikipedia.org  /path/to/custom-icon.png"
     echo "Example: $0 -r https://en.wikipedia.org"
     echo "Example: $0 -l"
@@ -66,14 +67,6 @@ function skim_website {
 function examine_favicon_pattern_links { #(html_content)
     local html_content=$1
 
-    # Look at <meta property=""> tags within the HTML
-    for property in 'twitter:image' 'og:image'; do
-        FAVICON_URL=$(echo "$html_content" | sed 's/>/>\n/g' | grep -iE "meta property=\"$property\".*content=\"?[^\"]" | head -n 1 | sed -nE 's/.*content="?([^"\\ ]*)"?.*/\1/p' | xargs) || true
-        if [[ -n ${FAVICON_URL:-} ]]; then
-            return
-        fi
-    done
-
     # Look at <link rel=""> tags within the HTML
     for rel in 'apple-touch-icon-precomposed' 'apple-touch-icon' 'fluid-icon' 'shortcut icon' 'favicon' 'image_src'; do
         FAVICON_URL=$(echo "$html_content" | sed 's/>/>\n/g' | grep -iE "rel=\"$rel\"" | head -n 1 | sed -n 's/.*href="\([^"]*\)".*/\1/p' | xargs) || true
@@ -82,12 +75,35 @@ function examine_favicon_pattern_links { #(html_content)
         fi
     done
 
-    for size in 'sizes="512x512"' 'sizes="256x256"' 'sizes="192x192"' 'sizes="128x128"' 'sizes="64x64"' 'sizes="32x32"' ' '; do
+    for size in 'sizes="128x128"' 'sizes="64x64"' 'sizes="32x32"' '$'; do
+        echo "Looking for Icon Size $size"
         FAVICON_URL=$(echo "$html_content" | sed 's/>/>\n/g' | grep -iE "rel=\"icon\".*$size" | head -n 1 | sed -n 's/.*href="\([^"]*\)".*/\1/p' | xargs) || true
         if [[ -n ${FAVICON_URL:-} ]]; then
             return
         fi
     done;
+
+    # Look at <meta property=""> tags within the HTML
+    for property in 'twitter:image' 'og:image'; do
+        FAVICON_URL=$(echo "$html_content" | sed 's/>/>\n/g' | grep -iE "meta property=\"$property\".*content=\"?[^\"]" | head -n 1 | sed -nE 's/.*content="?([^"\\ ]*)"?.*/\1/p' | xargs) || true
+        if [[ -n ${FAVICON_URL:-} ]]; then
+            return
+        fi
+    done
+}
+
+function delta_icon_link { # (hostname)
+    local domain=$1
+    local domain_without_www=${domain#www.*}
+    local service=${domain_without_www%.*}
+    local provider=''
+
+    if [[ $service =~ ([^.]+).(yahoo$|google$) ]]; then
+        service=${BASH_REMATCH[1]}
+        provider=${BASH_REMATCH[2]}
+    fi
+
+    echo "https://delta-icons.github.io/assets/img/icons/${provider}${provider:+_}${service}.png"
 }
 
 function download_icon {
@@ -147,14 +163,6 @@ function relative_url_to_abs {  # ()
         FAVICON_URL="${base_url}${FAVICON_URL}"
         echo "Found relative favicon URL in HTML: $FAVICON_URL"
     fi
-}
-
-function parse_html {
-     # Fetch the first 1000 lines
-    local html_content=$(curl_link "$HTML_URL" | head -n 1000) || true
-
-    # Look for various favicon link patterns
-    examine_rel_links "$html_content"
 }
 
 function install_icon { # (icon_filesystem_path)
@@ -231,7 +239,17 @@ function create_user_chrome {
 
 function probe_default_icon_urls {
     echo "No favicon link found in HTML, trying defaults"
-    local possible_urls=(
+
+    local icon_pack_link=$(delta_icon_link $HOSTNAME)
+    echo Trying $icon_pack_link
+
+    local result=$(curl_link $icon_pack_link)
+    if [[ -n "$result" ]]; then
+        FAVICON_URL=$icon_pack_link
+        return
+    fi
+
+    local possible_resources=(
         'apple-touch-icon-precomposed.png'
         'apple-touch-icon.png'
         'favicon.png'
@@ -239,8 +257,7 @@ function probe_default_icon_urls {
         'favicon.ico'
         'favicon.svg'
     )
-
-    for icon_url in "${possible_urls[@]}"; do
+    for icon_url in "${possible_resources[@]}"; do
         echo Trying "${BASE_URL}/$icon_url"
         result=$(curl_link "${BASE_URL}/$icon_url")
         if [[ -n "$result" ]]; then
@@ -302,7 +319,7 @@ function extract_hostname { # ()
     # Extract hostname from URL and Sanitize hostname for use as profile name
     if [[ $URL =~ ^https?://([^/]+) ]]; then
         BASE_URL=$(echo "$URL" | sed -E 's#(https?://[^/]+).*#\1#g')
-        HOSTNAME=$(echo "$BASE_URL" | sed -E 's#https?://([^/]+).*#\1#g')
+        HOSTNAME=$(echo "$BASE_URL" | sed -E 's#https?://([^/]+).*#\1#g;s/^www//ig')
         PROFILE_NAME=$(echo "$HOSTNAME" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
     else
         echo "Error: Invalid URL format. Please provide a valid HTTP/HTTPS URL."
@@ -334,6 +351,7 @@ function install_profile {  # ()
         download_icon
     fi
 
+    cp -f "$TEMP_DIR/$FAVICON_FILE" ~/
     convert_and_resize_icon
 
     # If in Debug, exit now and don't create the profile
@@ -383,26 +401,22 @@ function main {
         REMOVE_PROFILE=1
         shift
     elif [[ ${1:-} == "-l" ]]; then
-        LIST_PROFILES=1
-        shift
+        list_profiles
+        exit
     fi
 
     URL="${1:-}"
     CUSTOM_FAVICON="${2:-}"
 
     # No Args ?
-    [[ -n $URL || ${LIST_PROFILES:-} -eq 1 ]] || usage
+    [[ -n $URL  ]] || usage
 
     TEMP_DIR=$(mktemp -d)
     trap "rm -rf $TEMP_DIR" EXIT
 
     verify_dependencies
-    if [[ ${LIST_PROFILES:-} -eq 1 ]]; then
-        list_profiles
-        exit
-    fi
-
     extract_hostname
+
     if [[ ${REMOVE_PROFILE:-} -eq 1 ]]; then
         remove_profile
     else
