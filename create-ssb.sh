@@ -18,7 +18,7 @@ function usage {
     exit 1
 }
 
-function verify_dependencies {
+function verify_dependencies {  # ()
     # These are required
     local missing=''
     for cmd in curl magick firefox sed grep head tr; do
@@ -52,8 +52,8 @@ function curl_link {  # (url)
     done
 }
 
-function skim_website {
-    # Get just the domain part from the URL
+function skim_website { # ()
+    # Get just the protocol and hostname from the URL
     local html_url=$(echo $URL | sed -E 's/([^:\/])\/.*/\1/g')
     echo "Checking for favicon link in HTML... $html_url"
 
@@ -75,7 +75,7 @@ function examine_favicon_pattern_links { #(html_content)
         fi
     done
 
-    for size in 'sizes="128x128"' 'sizes="64x64"' 'sizes="32x32"' '$'; do
+    for size in 'sizes="512x512"' 'sizes="256x156"' 'sizes="128x128"' '$'; do
         echo "Looking for Icon Size $size"
         FAVICON_URL=$(echo "$html_content" | sed 's/>/>\n/g' | grep -iE "rel=\"icon\".*$size" | head -n 1 | sed -n 's/.*href="\([^"]*\)".*/\1/p' | xargs) || true
         if [[ -n ${FAVICON_URL:-} ]]; then
@@ -189,7 +189,7 @@ function create_desktop_shortcut {
 		  Name=$HOSTNAME
 		  Comment=$HOSTNAME \(SSB\)
 		  Exec=firefox --class SSB-$HOSTNAME --profile $PROFILE_DIR --no-remote $URL
-		  SSBFirefox=$HOSTNAME
+		  SSBFirefox=${PROTOCOL}${HOSTNAME}
 		  Terminal=false
 		  X-MultipleArgs=false
 		  Type=Application
@@ -319,7 +319,8 @@ function extract_hostname { # ()
     # Extract hostname from URL and Sanitize hostname for use as profile name
     if [[ $URL =~ ^https?://([^/]+) ]]; then
         BASE_URL=$(echo "$URL" | sed -E 's#(https?://[^/]+).*#\1#g')
-        HOSTNAME=$(echo "$BASE_URL" | sed -E 's#https?://([^/]+).*#\1#g;s/^www//ig')
+        PROTOCOL=$(echo "$URL" | sed -E 's#(https?://).*#\1#g')
+        HOSTNAME=$(echo "$BASE_URL" | sed -E 's#https?://([^/]+).*#\1#g;s/^www\.//ig')
         PROFILE_NAME=$(echo "$HOSTNAME" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
     else
         echo "Error: Invalid URL format. Please provide a valid HTTP/HTTPS URL."
@@ -398,7 +399,7 @@ function main {
     fi
 
     if [[ ${1:-} == "-r" ]]; then
-        REMOVE_PROFILE=1
+        local remove_profile=1
         shift
     elif [[ ${1:-} == "-l" ]]; then
         list_profiles
@@ -417,7 +418,7 @@ function main {
     verify_dependencies
     extract_hostname
 
-    if [[ ${REMOVE_PROFILE:-} -eq 1 ]]; then
+    if [[ ${remove_profile:-} -eq 1 ]]; then
         remove_profile
     else
         echo "Creating SSB for: $HOSTNAME with Profile name: $PROFILE_NAME"
