@@ -351,7 +351,7 @@ function install_profile {  # ()
         download_icon
     fi
 
-    cp -f "$TEMP_DIR/$FAVICON_FILE" ~/
+    [[ ${DEBUG:-} -eq 1 ]] && cp -f "$TEMP_DIR/$FAVICON_FILE" ~/
     convert_and_resize_icon
 
     # If in Debug, exit now and don't create the profile
