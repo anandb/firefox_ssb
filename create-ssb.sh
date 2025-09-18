@@ -6,8 +6,8 @@
 
 set -euo pipefail
 
-ICON_SIZE=128
-MOZILLA_USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+readonly ICON_SIZE=128
+readonly MOZILLA_USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 
 function usage {
     echo "Usage: $0 [-r | REMOVE PROFILE] [-l | LIST PROFILEs] <URL> [FAVICON_PATH]"
@@ -19,7 +19,19 @@ function usage {
 }
 
 function verify_dependencies {  # ()
-    # These are required
+    # Check OS compatibility
+    if [[ ! "$OSTYPE" =~ ^linux ]]; then
+        echo "Script designed for Linux. Current OS: $OSTYPE"
+        exit 1
+    fi
+
+    # Check available disk space (need at least 100MB for profiles)
+    local available_space=$(df ~/ | awk 'NR==2 {print $4}')
+    if [[ $available_space -lt 102400 ]]; then
+        echo "Insufficient disk space. Need at least 100MB, available: $((available_space/1024))MB"
+    fi
+
+    # These applications are required
     local missing=''
     for cmd in curl magick firefox sed grep head tr; do
         if ! command -v $cmd >& /dev/null; then
@@ -33,27 +45,109 @@ function verify_dependencies {  # ()
     fi
 }
 
-function curl_link {  # (url)
+function curl_link {  # (url, output_file, timeout_seconds)
     local url="$1"
     local outfile=${2:-$(mktemp --tmpdir=$TEMP_DIR)}
+    local timeout=${3:-30}  # Default 30 seconds timeout
+
+    local curl_opts=(
+        --silent
+        --location
+        --fail
+        --connect-timeout 10
+        --max-time "$timeout"
+        --retry 2
+        --retry-delay 1
+        --retry-connrefused
+        --compressed
+        --progress-bar
+    )
 
     # Some sites require a referrer and a user agent, so try multiple combinations
-    for arg in {0..3}; do
-        case $arg in
-            0) curl --silent --location --fail "$url" -o $outfile >& /dev/null ;;
-            1) curl -H "Referer: https://google.com" --silent --location --fail "$url" -o $outfile >& /dev/null ;;
-            2) curl -A "$MOZILLA_USER_AGENT" --silent --location --fail "$url" -o $outfile >& /dev/null ;;
-            3) curl -H "Referer: https://google.com" -A "$MOZILLA_USER_AGENT" --silent --location --fail "$url" -o $outfile >& /dev/null ;;
-        esac
-        if [[ $? -eq 0 ]]; then
-            cat $outfile
-            return
+    local strategies=(
+        ""  # No extra headers
+        "-H \"Referer: https://google.com\""
+        "-A \"$MOZILLA_USER_AGENT\""
+        "-H \"Referer: https://google.com\" -A \"$MOZILLA_USER_AGENT\""
+    )
+
+    for strategy in "${strategies[@]}"; do
+        local cmd="curl ${curl_opts[*]} $strategy \"$url\" -o \"$outfile\""
+
+        if eval "$cmd" 2>/dev/null; then
+            if [[ -s "$outfile" ]]; then
+                cat "$outfile"
+                return 0
+            fi
         fi
+
+        # Clean up failed attempt
+        [[ -f "$outfile" ]] && rm -f "$outfile"
     done
+
+    # All strategies failed
+    echo "Failed to download after ${#strategies[@]} attempts" >&2
+    return 1
+}
+
+function remove_profile {  # ()
+    echo "Removing Firefox Profile ..."
+    local profile_dir="$HOME/.local/share/ssb/${PROFILE_NAME}"
+    if [[ -f "$profile_dir/user.js" ]]; then
+        rm -rfv "$profile_dir"
+    fi
+
+    echo "Removing Icon ..."
+    local icon_dir="$HOME/.local/share/icons/hicolor/${ICON_SIZE}x${ICON_SIZE}/apps"
+    ICON_PATH="$icon_dir/${PROFILE_NAME}.png"
+    rm -fv "$ICON_PATH"
+
+    echo "Removing Desktop Shortcut ..."
+    local desktop_dir="$HOME/.local/share/applications"
+    rm -fv "$desktop_dir/${PROFILE_NAME}.desktop"
+}
+
+function list_profiles {  #()
+    local desktop_dir="$HOME/.local/share/applications"
+    grep -hPo '(SSBFirefox|IceFirefox)=(.*)' $desktop_dir/*.desktop | sed -E 's/[a-z]{3}Firefox=//ig'
+}
+
+function print_summary {
+    echo "
+        SSB created successfully!
+        URL: $URL
+        Profile: $PROFILE_DIR
+        Desktop file: $DESKTOP_FILE
+        Icon: $ICON_PATH
+
+        You can now launch the SSB from your application menu or run:
+        firefox --class SSB-$HOSTNAME --profile '$PROFILE_DIR' --no-remote '$URL'
+    " | sed -E 's/^\s+//g'
+}
+
+function extract_hostname { # ()
+    # Extract hostname from URL and Sanitize hostname for use as profile name
+    if [[ $URL =~ ^https?://([^/]+) ]]; then
+        # 'https://wiki.c2.com/?WelcomeVisitors' => 'https://wiki.c2.com'
+        BASE_URL=$(echo "$URL" | sed -E 's#(https?://[^/?]+).*#\1#g')
+
+        # 'https://wiki.c2.com/?WelcomeVisitors' => 'https://'
+        PROTOCOL=$(echo "$URL" | sed -E 's#(https?://).*#\1#g')
+
+        # 'https://wiki.c2.com' => 'wiki.c2.com'
+        HOSTNAME=$(echo "$BASE_URL" | sed -E 's#https?://([^/]+).*#\1#g;s/^www\.//ig')
+
+        # 'WIKI.C2.COM' => 'wiki-c2-com'
+        PROFILE_NAME=$(echo "$HOSTNAME" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
+    else
+        echo "Error: Invalid URL format. Please provide a valid HTTP/HTTPS URL."
+        exit 1
+    fi
 }
 
 function skim_website { # ()
     # Get just the protocol and hostname from the URL
+    # 'https://en.wikipedia.org/wiki/Twin_prime' => 'https://en.wikipedia.org'
     local html_url=$(echo $URL | sed -E 's/([^:\/])\/.*/\1/g')
     echo "Checking for favicon link in HTML... $html_url"
 
@@ -98,9 +192,13 @@ function delta_icon_link { # (hostname)
     local service=${domain_without_www%.*}
     local provider=''
 
-    if [[ $service =~ ([^.]+).(yahoo$|google$) ]]; then
+    if [[ $service =~ ^([^.]+).(yahoo|google|zoho)$ ]]; then
         service=${BASH_REMATCH[1]}
         provider=${BASH_REMATCH[2]}
+    else
+        # For other domains, just use the main domain name
+        service=${domain_without_www%%.*}
+        provider=''
     fi
 
     echo "https://delta-icons.github.io/assets/img/icons/${provider}${provider:+_}${service}.png"
@@ -110,7 +208,7 @@ function download_icon {
     local file_extension="${FAVICON_URL##*.}"
     file_extension="${file_extension%%\?*}"
 
-    if [[ $file_extension =~ ^(png|jpg|jpeg|gif|svg|ico)$ ]]; then
+    if [[ $file_extension =~ ^(png|jpg|jpeg|gif|svg|ico|webp|avif)$ ]]; then
         FAVICON_FILE="favicon.$file_extension"
     else
         echo "Unknown Image Extension $file_extension"
@@ -187,7 +285,7 @@ function create_desktop_shortcut {
     echo "[Desktop Entry]
           Version=1.0
 		  Name=$HOSTNAME
-		  Comment=$HOSTNAME \(SSB\)
+		  Comment=$HOSTNAME (SSB)
 		  Exec=firefox --class SSB-$HOSTNAME --profile $PROFILE_DIR --no-remote $URL
 		  SSBFirefox=${PROTOCOL}${HOSTNAME}
 		  Terminal=false
@@ -257,6 +355,7 @@ function probe_default_icon_urls {
         'favicon.ico'
         'favicon.svg'
     )
+
     for icon_url in "${possible_resources[@]}"; do
         echo Trying "${BASE_URL}/$icon_url"
         result=$(curl_link "${BASE_URL}/$icon_url")
@@ -302,32 +401,6 @@ function create_firefox_profile {
     create_user_chrome
 }
 
-function print_summary {
-    echo "
-        SSB created successfully!
-        URL: $URL
-        Profile: $PROFILE_DIR
-        Desktop file: $DESKTOP_FILE
-        Icon: $ICON_PATH
-
-        You can now launch the SSB from your application menu or run:
-        firefox --class SSB-$HOSTNAME --profile '$PROFILE_DIR' --no-remote '$URL'
-    " | sed -E 's/^\s+//g'
-}
-
-function extract_hostname { # ()
-    # Extract hostname from URL and Sanitize hostname for use as profile name
-    if [[ $URL =~ ^https?://([^/]+) ]]; then
-        BASE_URL=$(echo "$URL" | sed -E 's#(https?://[^/]+).*#\1#g')
-        PROTOCOL=$(echo "$URL" | sed -E 's#(https?://).*#\1#g')
-        HOSTNAME=$(echo "$BASE_URL" | sed -E 's#https?://([^/]+).*#\1#g;s/^www\.//ig')
-        PROFILE_NAME=$(echo "$HOSTNAME" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
-    else
-        echo "Error: Invalid URL format. Please provide a valid HTTP/HTTPS URL."
-        exit 1
-    fi
-}
-
 function install_profile {  # ()
     if [[ -s "$CUSTOM_FAVICON" ]]; then
         process_custom_icon
@@ -354,6 +427,7 @@ function install_profile {  # ()
 
     [[ ${DEBUG:-} -eq 1 ]] && cp -f "$TEMP_DIR/$FAVICON_FILE" ~/
     convert_and_resize_icon
+    [[ ${DEBUG:-} -eq 1 ]] && cp -f "$TEMP_DIR/${PROFILE_NAME}.png" ~/
 
     # If in Debug, exit now and don't create the profile
     [[ ${DEBUG:-} -eq 1 ]] && exit
@@ -366,28 +440,6 @@ function install_profile {  # ()
     create_desktop_shortcut
 
     print_summary
-}
-
-function remove_profile {  # ()
-    echo "Removing Firefox Profile ..."
-    local profile_dir="$HOME/.local/share/ssb/${PROFILE_NAME}"
-    if [[ -f "$profile_dir/user.js" ]]; then
-        rm -rfv "$profile_dir"
-    fi
-
-    echo "Removing Icon ..."
-    local icon_dir="$HOME/.local/share/icons/hicolor/${ICON_SIZE}x${ICON_SIZE}/apps"
-    ICON_PATH="$icon_dir/${PROFILE_NAME}.png"
-    rm -fv "$ICON_PATH"
-
-    echo "Removing Desktop Shortcut ..."
-    local desktop_dir="$HOME/.local/share/applications"
-    rm -fv "$desktop_dir/${PROFILE_NAME}.desktop"
-}
-
-function list_profiles {  #()
-    local desktop_dir="$HOME/.local/share/applications"
-    grep -hPo '(SSBFirefox|IceFirefox)=(.*)' $desktop_dir/*.desktop | sed -E 's/[a-z]{3}Firefox=//ig'
 }
 
 function main {
