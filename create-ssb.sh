@@ -11,7 +11,7 @@ readonly MOZILLA_USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebK
 readonly APP_DIR=$HOME/.local/share/ssb
 
 function usage {
-    echo "Usage: $0 [-r | REMOVE PROFILE] [-l | LIST PROFILEs] <URL> [FAVICON_PATH]"
+    echo "Usage: $0 [-r | REMOVE PROFILE] [-l | LIST PROFILEs] <URL> [ICON_PATH]"
     echo "Example: $0 https://en.wikipedia.org"
     echo "Example: $0 https://en.wikipedia.org  /path/to/custom-icon.png"
     echo "Example: $0 -r https://en.wikipedia.org"
@@ -153,9 +153,9 @@ function skim_website { # ()
     echo "Checking for favicon link in HTML... $html_url"
 
     # Fetch the first 1000 lines
-    HTML_CONTENT=$(curl_link "$html_url" | head -n 1000) || true
+    HTML_CONTENT=$(curl_link "$html_url" | head -n 1000 | tr -d '\000-\010\013\014\016-\037\177-\377') || true
     if [[ ${DEBUG:-} -eq 1 ]]; then
-        echo "$HTML_CONTENT"
+        echo "$HTML_CONTENT" | tr -d '\000-\010\013\014\016-\037\177-\377'
     fi
 }
 
@@ -164,7 +164,7 @@ function examine_favicon_pattern_links { #(html_url, html_content)
     local html_content=$2
 
     # Look at <link rel=""> tags within the HTML
-    for rel in 'apple-touch-icon-precomposed' 'apple-touch-icon' 'fluid-icon' 'shortcut icon' 'favicon' 'image_src'; do
+    for rel in 'apple-touch-icon-precomposed' 'apple-touch-icon' 'fluid-icon' 'shortcut icon' 'favicon' 'mask-icon' 'image_src'; do
         local url=$(echo "$html_content" | sed 's/>/>\n/g' | grep -iE "rel=\"$rel\"" | head -n 1 | sed -n 's/.*href="\([^"]*\)".*/\1/p' | xargs) || true
         download_icon_check_quality "$html_url" "$url"
         if [[ -n ${FAVICON_URL:-} ]]; then
@@ -335,8 +335,6 @@ function create_user_chrome {
 }
 
 function probe_default_icon_urls {
-    echo "No favicon link found in HTML, trying defaults"
-
     local icon_pack_link=$(delta_icon_link $HOSTNAME)
     echo Trying $icon_pack_link
 
@@ -386,7 +384,8 @@ function convert_and_resize_icon { # ()
 
     if [[ ! $extension == "png" && ! $extension == "svg"  ]]; then
         echo Running magick, converting favicon to PNG...
-        magick -verbose "\"$TEMP_DIR/$FAVICON_FILE[0]\"" "$TEMP_DIR/${PROFILE_NAME}.png" || true
+        extension=png
+        magick "$TEMP_DIR/${FAVICON_FILE}[0]" "$TEMP_DIR/${PROFILE_NAME}.$extension" || true
     else
         cp -f "$TEMP_DIR/$FAVICON_FILE" $TEMP_DIR/${PROFILE_NAME}.$extension
     fi
@@ -422,6 +421,7 @@ function install_profile {  # ()
 
         if [ -z "${FAVICON_URL:-}" ]; then
             # Look for well known paths like /favicon.ico
+            echo "No favicon link found in HTML, trying defaults"
             probe_default_icon_urls
         fi
 
@@ -431,10 +431,11 @@ function install_profile {  # ()
         fi
     fi
 
+    [[ ${DEBUG:-} -eq 1 ]] && cp -f  "$TEMP_DIR/$FAVICON_FILE" .
     convert_and_resize_icon
 
     # If in Debug, exit now and don't create the profile
-    [[ ${DEBUG:-} -eq 1 ]] && cp -f "$PROFILE_ICON" ~/temp/
+    [[ ${DEBUG:-} -eq 1 ]] && cp -f "$PROFILE_ICON" .
     [[ ${DEBUG:-} -eq 1 ]] && exit
 
     # Install icon
