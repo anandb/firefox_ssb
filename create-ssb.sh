@@ -8,6 +8,7 @@ set -euo pipefail
 
 readonly ICON_SIZE=128
 readonly MOZILLA_USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+readonly APP_DIR=$HOME/.local/share/ssb
 
 function usage {
     echo "Usage: $0 [-r | REMOVE PROFILE] [-l | LIST PROFILEs] <URL> [FAVICON_PATH]"
@@ -21,26 +22,27 @@ function usage {
 function verify_dependencies {  # ()
     # Check OS compatibility
     if [[ ! "$OSTYPE" =~ ^linux ]]; then
-        echo "Script designed for Linux. Current OS: $OSTYPE"
+        echo "Script designed for Linux. Current OS: $OSTYPE" 1>&2
         exit 1
     fi
 
     # Check available disk space (need at least 100MB for profiles)
     local available_space=$(df ~/ | awk 'NR==2 {print $4}')
     if [[ $available_space -lt 102400 ]]; then
-        echo "Insufficient disk space. Need at least 100MB, available: $((available_space/1024))MB"
+        echo "Insufficient disk space. Need at least 100MB, available: $((available_space/1024))MB" 1>&2
+        exit 1
     fi
 
     # These applications are required
     local missing=''
-    for cmd in curl magick firefox sed grep head tr; do
+    for cmd in curl magick firefox sed grep head tr file; do
         if ! command -v $cmd >& /dev/null; then
             missing="$missing $cmd"
         fi
     done
 
     if [[ -n $missing ]]; then
-        echo "Dependencies missing from PATH: $missing"
+        echo "Dependencies missing from PATH: $missing" 1>&2
         exit 1
     fi
 }
@@ -86,21 +88,20 @@ function curl_link {  # (url, output_file, timeout_seconds)
     done
 
     # All strategies failed
-    echo "Failed to download after ${#strategies[@]} attempts" >&2
+    echo "Failed to download after ${#strategies[@]} attempts" 1>&2
     return 1
 }
 
 function remove_profile {  # ()
     echo "Removing Firefox Profile ..."
-    local profile_dir="$HOME/.local/share/ssb/${PROFILE_NAME}"
+    local profile_dir="$APP_DIR/firefox/${PROFILE_NAME}"
     if [[ -f "$profile_dir/user.js" ]]; then
         rm -rfv "$profile_dir"
     fi
 
     echo "Removing Icon ..."
-    local icon_dir="$HOME/.local/share/icons/hicolor/${ICON_SIZE}x${ICON_SIZE}/apps"
-    ICON_PATH="$icon_dir/${PROFILE_NAME}.png"
-    rm -fv "$ICON_PATH"
+    local icon_dir="$APP_DIR/icons"
+    rm -fv "$icon_dir/${PROFILE_NAME}.*"
 
     echo "Removing Desktop Shortcut ..."
     local desktop_dir="$HOME/.local/share/applications"
@@ -109,7 +110,7 @@ function remove_profile {  # ()
 
 function list_profiles {  #()
     local desktop_dir="$HOME/.local/share/applications"
-    grep -hPo '(SSBFirefox|IceFirefox)=(.*)' $desktop_dir/*.desktop | sed -E 's/[a-z]{3}Firefox=//ig'
+    grep -hPo 'SSBFirefox=(.*)' $desktop_dir/*.desktop | sed -E 's/[a-z]{3}Firefox=//ig'
 }
 
 function print_summary {
@@ -118,7 +119,7 @@ function print_summary {
         URL: $URL
         Profile: $PROFILE_DIR
         Desktop file: $DESKTOP_FILE
-        Icon: $ICON_PATH
+        Icon: $PROFILE_ICON
 
         You can now launch the SSB from your application menu or run:
         firefox --class SSB-$HOSTNAME --profile '$PROFILE_DIR' --no-remote '$URL'
@@ -158,12 +159,14 @@ function skim_website { # ()
     fi
 }
 
-function examine_favicon_pattern_links { #(html_content)
-    local html_content=$1
+function examine_favicon_pattern_links { #(html_url, html_content)
+    local html_url=$1
+    local html_content=$2
 
     # Look at <link rel=""> tags within the HTML
     for rel in 'apple-touch-icon-precomposed' 'apple-touch-icon' 'fluid-icon' 'shortcut icon' 'favicon' 'image_src'; do
-        FAVICON_URL=$(echo "$html_content" | sed 's/>/>\n/g' | grep -iE "rel=\"$rel\"" | head -n 1 | sed -n 's/.*href="\([^"]*\)".*/\1/p' | xargs) || true
+        local url=$(echo "$html_content" | sed 's/>/>\n/g' | grep -iE "rel=\"$rel\"" | head -n 1 | sed -n 's/.*href="\([^"]*\)".*/\1/p' | xargs) || true
+        download_icon_check_quality "$html_url" "$url"
         if [[ -n ${FAVICON_URL:-} ]]; then
             return
         fi
@@ -171,7 +174,8 @@ function examine_favicon_pattern_links { #(html_content)
 
     for size in 'sizes="512x512"' 'sizes="256x156"' 'sizes="128x128"' '$'; do
         echo "Looking for Icon Size $size"
-        FAVICON_URL=$(echo "$html_content" | sed 's/>/>\n/g' | grep -iE "rel=\"icon\".*$size" | head -n 1 | sed -n 's/.*href="\([^"]*\)".*/\1/p' | xargs) || true
+        local url=$(echo "$html_content" | sed 's/>/>\n/g' | grep -iE "rel=\"icon\".*$size" | head -n 1 | sed -n 's/.*href="\([^"]*\)".*/\1/p' | xargs) || true
+        download_icon_check_quality "$html_url" "$url"
         if [[ -n ${FAVICON_URL:-} ]]; then
             return
         fi
@@ -179,7 +183,8 @@ function examine_favicon_pattern_links { #(html_content)
 
     # Look at <meta property=""> tags within the HTML
     for property in 'twitter:image' 'og:image'; do
-        FAVICON_URL=$(echo "$html_content" | sed 's/>/>\n/g' | grep -iE "meta property=\"$property\".*content=\"?[^\"]" | head -n 1 | sed -nE 's/.*content="?([^"\\ ]*)"?.*/\1/p' | xargs) || true
+        local url=$(echo "$html_content" | sed 's/>/>\n/g' | grep -iE "meta property=\"$property\".*content=\"?[^\"]" | head -n 1 | sed -nE 's/.*content="?([^"\\ ]*)"?.*/\1/p' | xargs) || true
+        download_icon_check_quality "$html_url" "$url"
         if [[ -n ${FAVICON_URL:-} ]]; then
             return
         fi
@@ -192,7 +197,7 @@ function delta_icon_link { # (hostname)
     local service=${domain_without_www%.*}
     local provider=''
 
-    if [[ $service =~ ^([^.]+).(yahoo|google|zoho)$ ]]; then
+    if [[ $service =~ ^([^.]+).(yahoo|google|zoho|apple)$ ]]; then
         service=${BASH_REMATCH[1]}
         provider=${BASH_REMATCH[2]}
     else
@@ -204,22 +209,9 @@ function delta_icon_link { # (hostname)
     echo "https://delta-icons.github.io/assets/img/icons/${provider}${provider:+_}${service}.png"
 }
 
-function download_icon {
-    local file_extension="${FAVICON_URL##*.}"
-    file_extension="${file_extension%%\?*}"
-
-    if [[ $file_extension =~ ^(png|jpg|jpeg|gif|svg|ico|webp|avif)$ ]]; then
-        FAVICON_FILE="favicon.$file_extension"
-    else
-        echo "Unknown Image Extension $file_extension"
-        exit 1
-    fi
-
-    curl_link "$FAVICON_URL" "$TEMP_DIR/$FAVICON_FILE" >& /dev/null
-    if [[ ! -s "$TEMP_DIR/$FAVICON_FILE" ]]; then
-        echo "Failed to download favicon"
-        exit 1
-    fi
+function google_icon_link { # (hostname)
+    local domain=$1
+    echo "https://www.google.com/s2/favicons?sz=${ICON_SIZE}&domain=${domain}&format=.png"
 }
 
 function process_custom_icon {  # ()
@@ -237,42 +229,48 @@ function process_custom_icon {  # ()
     FAVICON_FILE="favicon.$extension"
 
     # Copy custom favicon to temp directory
-    cp -f "$CUSTOM_FAVICON" "$TEMP_DIR/$FAVICON_FILE"
+    cp -fv "$CUSTOM_FAVICON" "$TEMP_DIR/$FAVICON_FILE"
 }
 
-function relative_url_to_abs {  # ()
-    local base_url=$(echo "$URL" | sed -n 's/^\(https\?:\/\/[^\/]*\).*/\1/p')
-    local protocol=$(echo "$URL" | sed -n 's/^\(https\?\):\/\/.*/\1/p')
+function relative_url_to_abs {  # (full_url, url)
+    local full_url=$1
+    local url=$2
 
-    if [[ $FAVICON_URL =~ ^https?:// ]]; then
+    local protocol=$(echo "$full_url" | sed -n 's/^\(https\?\):\/\/.*/\1/p')
+    local base_url=$(echo "$full_url" | sed -n 's/^\(https\?:\/\/[^\/]*\).*/\1/p')
+
+    if [[ $url =~ ^https?:// ]]; then
         # Already absolute URL
-        echo "Found absolute favicon URL in HTML: $FAVICON_URL"
-    elif [[ $FAVICON_URL =~ ^// ]]; then
+        echo "Found absolute favicon URL in HTML: $url" 1>&2
+    elif [[ $url =~ ^// ]]; then
         # Protocol-relative URL
-        FAVICON_URL="${protocol}:${FAVICON_URL}"
-        echo "Found protocol relative favicon URL in HTML: $FAVICON_URL"
-    elif [[ $FAVICON_URL =~ ^/ ]]; then
+        url="${protocol}:${url}"
+        echo "Found protocol relative favicon URL in HTML: $url"  1>&2
+    elif [[ $url =~ ^/ ]]; then
         # Root-relative URL
-        FAVICON_URL="${base_url}${FAVICON_URL}"
-        echo "Found root favicon URL in HTML: $FAVICON_URL"
+        url="${base_url}${url}"
+        echo "Found root favicon URL in HTML: $url"  1>&2
     else
         # Relative URL
-        FAVICON_URL=$(echo $FAVICON_URL | sed -E 's/(^[^\/])/\/\1/')
-        FAVICON_URL="${base_url}${FAVICON_URL}"
-        echo "Found relative favicon URL in HTML: $FAVICON_URL"
+        url=$(echo $url | sed -E 's/(^[^\/])/\/\1/')
+        url="${base_url}${url}"
+        echo "Found relative favicon URL in HTML: $url"  1>&2
     fi
+
+    echo "$url"
 }
 
 function install_icon { # (icon_filesystem_path)
     local src_path=$1
+    local file_name="${src_path##*/}"
 
     # Create icon directory structure
-    local icon_dir="$HOME/.local/share/icons/hicolor/${ICON_SIZE}x${ICON_SIZE}/apps"
+    local icon_dir="$APP_DIR/icons"
     mkdir -p "$icon_dir"
 
     echo "Installing icon..."
-    cp -f "$src_path" "$icon_dir/"
-    ICON_PATH="$icon_dir/${PROFILE_NAME}.png"
+    cp -f "$src_path" "$icon_dir/$file_name"
+    PROFILE_ICON="$icon_dir/$file_name"
 }
 
 function create_desktop_shortcut {
@@ -291,7 +289,7 @@ function create_desktop_shortcut {
 		  Terminal=false
 		  X-MultipleArgs=false
 		  Type=Application
-		  Icon=$ICON_PATH
+		  Icon=$PROFILE_ICON
 		  Categories=GTK;Network;KDE;Qt;GNOME
 		  MimeType=text/html;text/xml;application/xhtml_xml;
 		  StartupWMClass=SSB-$HOSTNAME
@@ -312,6 +310,7 @@ function create_user_options {
         user_pref("browser.cache.disk.smart_size.use_old_max", false);
         user_pref("browser.ctrlTab.previews", true);
         user_pref("browser.tabs.warnOnClose", true);
+        user_pref("browser.restoreWindowState.disabled", true);
         user_pref("toolkit.telemetry.enabled", false);
         user_pref("datareporting.healthreport.service.enabled", false);
         user_pref("datareporting.healthreport.uploadEnabled", false);
@@ -343,8 +342,21 @@ function probe_default_icon_urls {
 
     local result=$(curl_link $icon_pack_link)
     if [[ -n "$result" ]]; then
-        FAVICON_URL=$icon_pack_link
-        return
+        download_icon_check_quality "$URL" "$icon_pack_link"
+        if [[ -n ${FAVICON_URL:-} ]]; then
+            return
+        fi
+    fi
+
+    local google_link=$(google_icon_link $HOSTNAME)
+    echo Trying $google_link
+
+    local result=$(curl_link $google_link)
+    if [[ -n "$result" ]]; then
+        download_icon_check_quality "$URL" "$google_link"
+        if [[ -n ${FAVICON_URL:-} ]]; then
+            return
+        fi
     fi
 
     local possible_resources=(
@@ -360,37 +372,37 @@ function probe_default_icon_urls {
         echo Trying "${BASE_URL}/$icon_url"
         result=$(curl_link "${BASE_URL}/$icon_url")
         if [[ -n "$result" ]]; then
-            FAVICON_URL="${BASE_URL}/$icon_url"
-            break
+            download_icon_check_quality ${BASE_URL} "${BASE_URL}/$icon_url"
+            if [[ -n ${FAVICON_URL:-} ]]; then
+                return
+            fi
         fi
     done
 }
 
 function convert_and_resize_icon { # ()
     # Convert and resize favicon
-    echo "Converting favicon to ${ICON_SIZE}x${ICON_SIZE} PNG..."
-    if [[ $FAVICON_FILE =~ .svg$ ]]; then
-        if command -v inkscape >& /dev/null; then
-            echo Running inkscape
-            inkscape -w $ICON_SIZE -h $ICON_SIZE "$TEMP_DIR/$FAVICON_FILE" -o "$TEMP_DIR/${PROFILE_NAME}.png" || true
-        else
-            echo "inkscape is required to process SVG icons"
-            exit 1
-        fi
+    local extension="${FAVICON_FILE##*.}"
+
+    if [[ ! $extension == "png" && ! $extension == "svg"  ]]; then
+        echo Running magick, converting favicon to PNG...
+        magick -verbose "\"$TEMP_DIR/$FAVICON_FILE[0]\"" "$TEMP_DIR/${PROFILE_NAME}.png" || true
     else
-        magick "$TEMP_DIR/$FAVICON_FILE[0]" -resize ${ICON_SIZE}x${ICON_SIZE} "$TEMP_DIR/${PROFILE_NAME}.png" || true
+        cp -f "$TEMP_DIR/$FAVICON_FILE" $TEMP_DIR/${PROFILE_NAME}.$extension
     fi
 
     # Check if conversion was successful
-    if [[ ! -s "$TEMP_DIR/${PROFILE_NAME}.png" ]]; then
+    if [[ ! -s "$TEMP_DIR/${PROFILE_NAME}.$extension" ]]; then
         echo "Error: Failed to convert favicon to PNG" $(file "$TEMP_DIR/$FAVICON_FILE")
         exit 1
     fi
+
+    PROFILE_ICON="$TEMP_DIR/${PROFILE_NAME}.$extension"
 }
 
 function create_firefox_profile {
     echo "Creating Firefox profile..."
-    PROFILE_DIR="$HOME/.local/share/ssb/${PROFILE_NAME}"
+    PROFILE_DIR="$APP_DIR/firefox/${PROFILE_NAME}"
     mkdir -p "$PROFILE_DIR"
     firefox -CreateProfile "$PROFILE_NAME $PROFILE_DIR" -headless
 
@@ -406,34 +418,27 @@ function install_profile {  # ()
         process_custom_icon
     else
         skim_website
-        examine_favicon_pattern_links "$HTML_CONTENT"
+        examine_favicon_pattern_links "$URL" "$HTML_CONTENT"
 
-        if [ -n "$FAVICON_URL" ]; then
-            relative_url_to_abs
-        else
+        if [ -z "${FAVICON_URL:-}" ]; then
             # Look for well known paths like /favicon.ico
             probe_default_icon_urls
         fi
 
-        if [[ -z "$FAVICON_URL" ]]; then
+        if [[ -z "${FAVICON_URL:-}" ]]; then
             echo "No Favicon Found"
             exit 1
         fi
-
-        # Download the favicon
-        echo "Downloading favicon... $FAVICON_URL"
-        download_icon
     fi
 
-    [[ ${DEBUG:-} -eq 1 ]] && cp -f "$TEMP_DIR/$FAVICON_FILE" ~/
     convert_and_resize_icon
-    [[ ${DEBUG:-} -eq 1 ]] && cp -f "$TEMP_DIR/${PROFILE_NAME}.png" ~/
 
     # If in Debug, exit now and don't create the profile
+    [[ ${DEBUG:-} -eq 1 ]] && cp -f "$PROFILE_ICON" ~/temp/
     [[ ${DEBUG:-} -eq 1 ]] && exit
 
     # Install icon
-    install_icon "$TEMP_DIR/${PROFILE_NAME}.png"
+    install_icon "$PROFILE_ICON"
 
     # Create Firefox profile
     create_firefox_profile
@@ -442,11 +447,42 @@ function install_profile {  # ()
     print_summary
 }
 
+function download_icon_check_quality { #(base_url, url)
+    if [[ -z "${1:-}" || -z "${2:-}" ]]; then
+        return
+    fi
+
+    local url=$(relative_url_to_abs "${1:-}" "${2:-}")
+    local file_extension="${url##*.}"
+    file_extension="${file_extension%%\?*}"
+
+    if [[ $file_extension =~ ^(svg)$ ]]; then
+        FAVICON_URL="$url"
+        FAVICON_FILE="favicon.$file_extension"
+        curl_link "$url" "$TEMP_DIR/favicon.$file_extension" >& /dev/null
+    elif [[ ! $file_extension =~ ^(png|jpg|jpeg|gif|ico|webp|avif)$ ]]; then
+        echo "Unknown Image Extension $file_extension"
+        return
+    else
+        curl_link "$url" "$TEMP_DIR/favicon.$file_extension" >& /dev/null
+        if [[ ! -s "$TEMP_DIR/favicon.$file_extension" ]]; then
+            echo "Failed to download favicon"
+            return
+        fi
+
+        local quality=$(file "$TEMP_DIR/favicon.$file_extension" | grep -oP '\b(\d{2,})\s?x\s?\1\b' | tr 'x' ' ' | awk '{print $NF;exit}')
+        file "$TEMP_DIR/favicon.$file_extension"
+        if [[ $((quality)) -ge $ICON_SIZE ]]; then
+            FAVICON_URL="$url"
+            FAVICON_FILE="favicon.$file_extension"
+        fi
+    fi
+}
+
 function main {
     # Debug mode ?
     if [[ ${1:-} == "-n" ]]; then
         DEBUG=1
-        set -x
         shift
     fi
 
