@@ -27,7 +27,7 @@ function verify_dependencies {  # ()
     fi
 
     # Check available disk space (need at least 100MB for profiles)
-    local available_space=$(df ~/ | awk 'NR==2 {print $4}')
+    local available_space=$(df ~/ | awk '(NR == 2) {print $4}')
     if [[ $available_space -lt 102400 ]]; then
         echo "Insufficient disk space. Need at least 100MB, available: $((available_space/1024))MB" 1>&2
         exit 1
@@ -127,7 +127,7 @@ function print_summary {
 }
 
 function extract_hostname { # ()
-    # Extract hostname from URL and Sanitize hostname for use as profile name
+    # Extract hostname from URL and sanitize hostname for use as profile name.
     if [[ $URL =~ ^https?://([^/]+) ]]; then
         # 'https://wiki.c2.com/?WelcomeVisitors' => 'https://wiki.c2.com'
         BASE_URL=$(echo "$URL" | sed -E 's#(https?://[^/?]+).*#\1#g')
@@ -155,7 +155,7 @@ function skim_website { # ()
     # Fetch the first 1000 lines
     HTML_CONTENT=$(curl_link "$html_url" | head -n 1000 | tr -d '\000-\010\013\014\016-\037\177-\377') || true
     if [[ ${DEBUG:-} -eq 1 ]]; then
-        echo "$HTML_CONTENT" | tr -d '\000-\010\013\014\016-\037\177-\377'
+        echo "$HTML_CONTENT"
     fi
 }
 
@@ -241,20 +241,20 @@ function relative_url_to_abs {  # (full_url, url)
 
     if [[ $url =~ ^https?:// ]]; then
         # Already absolute URL
-        echo "Found absolute favicon URL in HTML: $url" 1>&2
+        echo "Trying absolute favicon URL in HTML: $url" 1>&2
     elif [[ $url =~ ^// ]]; then
         # Protocol-relative URL
+        echo "Trying protocol relative favicon URL in HTML: $url"  1>&2
         url="${protocol}:${url}"
-        echo "Found protocol relative favicon URL in HTML: $url"  1>&2
     elif [[ $url =~ ^/ ]]; then
         # Root-relative URL
+        echo "Trying root favicon URL in HTML: $url"  1>&2
         url="${base_url}${url}"
-        echo "Found root favicon URL in HTML: $url"  1>&2
     else
         # Relative URL
         url=$(echo $url | sed -E 's/(^[^\/])/\/\1/')
         url="${base_url}${url}"
-        echo "Found relative favicon URL in HTML: $url"  1>&2
+        echo "Trying relative favicon URL in HTML: $url"  1>&2
     fi
 
     echo "$url"
@@ -309,17 +309,33 @@ function create_user_options {
         user_pref("browser.cache.disk.smart_size.first_run", false);
         user_pref("browser.cache.disk.smart_size.use_old_max", false);
         user_pref("browser.ctrlTab.previews", true);
-        user_pref("browser.tabs.warnOnClose", true);
         user_pref("browser.restoreWindowState.disabled", true);
-        user_pref("toolkit.telemetry.enabled", false);
+        user_pref("browser.tabs.warnOnClose", true);
+        user_pref("browser.contentblocking.category", "strict");
         user_pref("datareporting.healthreport.service.enabled", false);
         user_pref("datareporting.healthreport.uploadEnabled", false);
         user_pref("datareporting.policy.dataSubmissionEnabled", false);
+        user_pref("pdfjs.enabledCache.state", true);
+        user_pref("privacy.annotate_channels.strict_list.enabled", true);
+        user_pref("privacy.bounceTrackingProtection.mode", 1);
+        user_pref("privacy.fingerprintingProtection", true);
+        user_pref("privacy.globalprivacycontrol.enabled", true);
+        user_pref("privacy.globalprivacycontrol.was_ever_enabled", true);
+        user_pref("privacy.query_stripping.enabled.pbmode", true);
+        user_pref("privacy.query_stripping.enabled", true);
+        user_pref("privacy.resistFingerprinting", true);
+        user_pref("privacy.trackingprotection.consentmanager.skip.pbmode.enabled", false);
+        user_pref("privacy.trackingprotection.emailtracking.enabled", true);
+        user_pref("privacy.trackingprotection.enabled", true);
+        user_pref("privacy.trackingprotection.socialtracking.enabled", true);
+        user_pref("signon.rememberSignons", false);
+        user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
         user_pref("toolkit.telemetry.archive.enabled", false);
         user_pref("toolkit.telemetry.bhrPing.enabled", false);
+        user_pref("toolkit.telemetry.enabled", false);
         user_pref("toolkit.telemetry.shutdownPingSender.enabled", false);
         user_pref("toolkit.telemetry.unified", false);
-        user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
+        user_pref("sidebar.revamp", false);
     ' | sed -E 's/^\s+//g' > "$PROFILE_DIR/user.js"
 }
 
@@ -458,9 +474,11 @@ function download_icon_check_quality { #(base_url, url)
     file_extension="${file_extension%%\?*}"
 
     if [[ $file_extension =~ ^(svg)$ ]]; then
-        FAVICON_URL="$url"
-        FAVICON_FILE="favicon.$file_extension"
         curl_link "$url" "$TEMP_DIR/favicon.$file_extension" >& /dev/null
+        if file "$TEMP_DIR/favicon.$file_extension" | grep "Scalable Vector Graphics"; then
+            FAVICON_URL="$url"
+            FAVICON_FILE="favicon.$file_extension"
+        fi
     elif [[ ! $file_extension =~ ^(png|jpg|jpeg|gif|ico|webp|avif)$ ]]; then
         echo "Unknown Image Extension $file_extension"
         return
