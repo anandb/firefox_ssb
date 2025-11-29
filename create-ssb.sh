@@ -284,7 +284,7 @@ function create_desktop_shortcut {
           Version=1.0
 		  Name=$HOSTNAME
 		  Comment=$HOSTNAME (SSB)
-		  Exec=firefox --class SSB-$HOSTNAME --profile $PROFILE_DIR --no-remote $URL
+		  Exec=firefox --class SSB-$PROFILE_NAME --profile $PROFILE_DIR --no-remote $URL
 		  SSBFirefox=${PROTOCOL}${HOSTNAME}
 		  Terminal=false
 		  X-MultipleArgs=false
@@ -292,7 +292,7 @@ function create_desktop_shortcut {
 		  Icon=$PROFILE_ICON
 		  Categories=GTK;Network;KDE;Qt;GNOME
 		  MimeType=text/html;text/xml;application/xhtml_xml;
-		  StartupWMClass=SSB-$HOSTNAME
+		  StartupWMClass=SSB-$PROFILE_NAME
 		  StartupNotify=true
     " | sed -E 's/^\s+//g' > "$DESKTOP_FILE"
 
@@ -336,6 +336,7 @@ function create_user_options {
         user_pref("toolkit.telemetry.shutdownPingSender.enabled", false);
         user_pref("toolkit.telemetry.unified", false);
         user_pref("sidebar.revamp", false);
+        user_pref("media.webspeech.synth.enabled", false);
     ' | sed -E 's/^\s+//g' > "$PROFILE_DIR/user.js"
 }
 
