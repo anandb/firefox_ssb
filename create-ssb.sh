@@ -9,10 +9,12 @@ set -euo pipefail
 readonly ICON_SIZE=128
 readonly MOZILLA_USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 readonly APP_DIR=$HOME/.local/share/ssb
+STRICT_PRIVACY=0
 
 function usage {
-    echo "Usage: $0 [-r | REMOVE PROFILE] [-l | LIST PROFILEs] <URL> [ICON_PATH]"
+    echo "Usage: $0 [-s | STRICT PRIVACY] [-r | REMOVE PROFILE] [-l | LIST PROFILEs] <URL> [ICON_PATH]"
     echo "Example: $0 https://en.wikipedia.org"
+    echo "Example: $0 -s https://en.wikipedia.org"
     echo "Example: $0 https://en.wikipedia.org  /path/to/custom-icon.png"
     echo "Example: $0 -r https://en.wikipedia.org"
     echo "Example: $0 -l"
@@ -302,7 +304,7 @@ function create_desktop_shortcut {
 # Create user.js
 function create_user_options {
     echo "Creating user.js..."
-    echo '
+    local prefs='
         user_pref("browser.cache.disk.capacity", 256000);
         user_pref("browser.cache.disk.enable", true);
         user_pref("browser.cache.disk.smart_size.enabled", false);
@@ -311,11 +313,24 @@ function create_user_options {
         user_pref("browser.ctrlTab.previews", true);
         user_pref("browser.restoreWindowState.disabled", true);
         user_pref("browser.tabs.warnOnClose", true);
-        user_pref("browser.contentblocking.category", "strict");
         user_pref("datareporting.healthreport.service.enabled", false);
         user_pref("datareporting.healthreport.uploadEnabled", false);
         user_pref("datareporting.policy.dataSubmissionEnabled", false);
         user_pref("pdfjs.enabledCache.state", true);
+        user_pref("signon.rememberSignons", false);
+        user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
+        user_pref("toolkit.telemetry.archive.enabled", false);
+        user_pref("toolkit.telemetry.bhrPing.enabled", false);
+        user_pref("toolkit.telemetry.enabled", false);
+        user_pref("toolkit.telemetry.shutdownPingSender.enabled", false);
+        user_pref("toolkit.telemetry.unified", false);
+        user_pref("sidebar.revamp", false);
+        user_pref("media.webspeech.synth.enabled", false);
+    '
+
+    if [[ ${STRICT_PRIVACY:-0} -eq 1 ]]; then
+        prefs="$prefs"'
+        user_pref("browser.contentblocking.category", "strict");
         user_pref("privacy.annotate_channels.strict_list.enabled", true);
         user_pref("privacy.bounceTrackingProtection.mode", 1);
         user_pref("privacy.fingerprintingProtection", true);
@@ -328,16 +343,10 @@ function create_user_options {
         user_pref("privacy.trackingprotection.emailtracking.enabled", true);
         user_pref("privacy.trackingprotection.enabled", true);
         user_pref("privacy.trackingprotection.socialtracking.enabled", true);
-        user_pref("signon.rememberSignons", false);
-        user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
-        user_pref("toolkit.telemetry.archive.enabled", false);
-        user_pref("toolkit.telemetry.bhrPing.enabled", false);
-        user_pref("toolkit.telemetry.enabled", false);
-        user_pref("toolkit.telemetry.shutdownPingSender.enabled", false);
-        user_pref("toolkit.telemetry.unified", false);
-        user_pref("sidebar.revamp", false);
-        user_pref("media.webspeech.synth.enabled", false);
-    ' | sed -E 's/^\s+//g' > "$PROFILE_DIR/user.js"
+        '
+    fi
+
+    echo "$prefs" | sed -E '/^\s*$/d; s/^\s+//g' > "$PROFILE_DIR/user.js"
 }
 
 function create_user_chrome {
@@ -500,19 +509,35 @@ function download_icon_check_quality { #(base_url, url)
 }
 
 function main {
-    # Debug mode ?
-    if [[ ${1:-} == "-n" ]]; then
-        DEBUG=1
-        shift
-    fi
+    local remove_profile=0
 
-    if [[ ${1:-} == "-r" ]]; then
-        local remove_profile=1
-        shift
-    elif [[ ${1:-} == "-l" ]]; then
-        list_profiles
-        exit
-    fi
+    while [[ $# -gt 0 ]]; do
+        case "${1}" in
+            -n)
+                DEBUG=1
+                shift
+                ;;
+            -s)
+                STRICT_PRIVACY=1
+                shift
+                ;;
+            -r)
+                remove_profile=1
+                shift
+                ;;
+            -l)
+                list_profiles
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" 1>&2
+                usage
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
 
     URL="${1:-}"
     CUSTOM_FAVICON="${2:-}"

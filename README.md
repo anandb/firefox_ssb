@@ -5,10 +5,11 @@ Creates a custom firefox profile for a Site-Specific Browser (SSB), and creates 
 ```sh
 
 Usage:
-    ./create-ssb.sh [-r | REMOVE PROFILE] [-l | LIST PROFILEs] <URL> [CUSTOM_ICON_PATH]
+    ./create-ssb.sh [-s | STRICT PRIVACY] [-r | REMOVE PROFILE] [-l | LIST PROFILEs] <URL> [CUSTOM_ICON_PATH]
 
 Examples:
     ./create-ssb.sh https://en.wikipedia.org
+    ./create-ssb.sh -s https://en.wikipedia.org
     ./create-ssb.sh https://en.wikipedia.org  /path/to/custom-icon.png
     ./create-ssb.sh -r https://en.wikipedia.org
     ./create-ssb.sh -l
@@ -16,3 +17,7 @@ Examples:
 ```
 
 If no custom icon is provided, the script attempts to download the favicon configured on the site.
+
+## Support the Author
+
+Support the Author of this project by signing up for [OpenCode Go](https://opencode.ai/go?ref=DWTNHGN9KX) 🚀
